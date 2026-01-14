@@ -28,7 +28,7 @@ def recv_exact(sock: socket.socket, n: int) -> bytes | None:
 
 
 def suit_name(s: int) -> str:
-    return ["H", "D", "C", "S"][s]
+    return ["♥", "♦", "♣", "♠"][s]
 
 
 def rank_name(r: int) -> str:
@@ -37,6 +37,13 @@ def rank_name(r: int) -> str:
     if 2 <= r <= 10:
         return str(r)
     return {11: "J", 12: "Q", 13: "K"}[r]
+
+
+def color_card(rank: str, suit_sym: str) -> str:
+    # red for hearts/diamonds
+    if suit_sym in ("♥", "♦"):
+        return f"\033[31m{rank}{suit_sym}\033[0m"
+    return f"{rank}{suit_sym}"
 
 
 def result_name(code: int) -> str:
@@ -109,7 +116,6 @@ def wait_for_offer(udp: socket.socket) -> tuple[str, int, str]:
         return server_ip, offer.tcp_port, server_name_norm
 
 
-
 def play_session(server_ip: str, tcp_port: int, rounds: int) -> tuple[int, int, int] | None:
     """
     Connects via TCP, sends request, plays 'rounds' rounds.
@@ -155,7 +161,9 @@ def play_session(server_ip: str, tcp_port: int, rounds: int) -> tuple[int, int, 
                 tcp.close()
                 return wins, losses, ties
 
-            card_str = f"{rank_name(p.rank)}{suit_name(p.suit)}"
+            suit_sym = suit_name(p.suit)
+            card_str = color_card(rank_name(p.rank), suit_sym)
+
             if i < 2:
                 player_sum += card_value(p.rank)
                 print(f"Your card: {card_str} (sum={player_sum})")
@@ -191,7 +199,9 @@ def play_session(server_ip: str, tcp_port: int, rounds: int) -> tuple[int, int, 
                     tcp.close()
                     return wins, losses, ties
 
-                card_str = f"{rank_name(p.rank)}{suit_name(p.suit)}"
+                suit_sym = suit_name(p.suit)
+                card_str = color_card(rank_name(p.rank), suit_sym)
+
                 player_sum += card_value(p.rank)
                 print(f"You drew: {card_str} (sum={player_sum})")
 
@@ -231,7 +241,8 @@ def play_session(server_ip: str, tcp_port: int, rounds: int) -> tuple[int, int, 
                         tcp.close()
                         return wins, losses, ties
 
-                    card_str = f"{rank_name(p.rank)}{suit_name(p.suit)}"
+                    suit_sym = suit_name(p.suit)
+                    card_str = color_card(rank_name(p.rank), suit_sym)
                     print(f"Dealer shows/draws: {card_str}")
 
                     if p.result != RESULT_NOT_OVER:
