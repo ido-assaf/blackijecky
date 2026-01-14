@@ -4,6 +4,9 @@ import time
 import random
 import threading
 import traceback
+import subprocess
+import re
+import ipaddress
 
 from protocol import (
     UDP_OFFER_PORT, pack_offer,
@@ -26,15 +29,64 @@ REQUEST_TIMEOUT = 20.0
 PLAYER_DECISION_TIMEOUT = 120.0
 
 
-def get_local_ip() -> str:
+def get_default_route_ip() -> str:
+    """Pick the local IPv4 used for outbound traffic (default route)."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        # doesn't actually send, just selects route/interface
         s.connect(("8.8.8.8", 80))
         return s.getsockname()[0]
     except OSError:
         return "0.0.0.0"
     finally:
         s.close()
+
+
+def get_wifi_ipv4_and_mask_from_ipconfig() -> tuple[str, str] | None:
+    """
+    Windows-only: parse `ipconfig` and try to find Wi-Fi adapter IPv4 + Subnet Mask.
+    Works with English/Hebrew output.
+    """
+    try:
+        out = subprocess.check_output(["ipconfig"], text=True, encoding="utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    # Split to adapter blocks
+    blocks = re.split(r"\r?\n\r?\n", out)
+    for b in blocks:
+        # Look for Wi-Fi adapter block (English or Hebrew usually still contains "Wi-Fi")
+        if "Wi-Fi" not in b and "Wireless LAN adapter" not in b and "אלחוט" not in b:
+            continue
+
+        ipv4 = None
+        mask = None
+
+        # IPv4 line patterns (English/Hebrew)
+        m_ip = re.search(r"IPv4 Address[^:]*:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", b)
+        if not m_ip:
+            m_ip = re.search(r"כתובת IPv4[^:]*:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", b)
+        if m_ip:
+            ipv4 = m_ip.group(1).strip()
+
+        m_mask = re.search(r"Subnet Mask[^:]*:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", b)
+        if not m_mask:
+            m_mask = re.search(r"מסכת רשת משנה[^:]*:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", b)
+        if m_mask:
+            mask = m_mask.group(1).strip()
+
+        if ipv4 and mask:
+            return ipv4, mask
+
+    return None
+
+
+def compute_directed_broadcast(ip_str: str, mask_str: str) -> str | None:
+    try:
+        net = ipaddress.IPv4Network((ip_str, mask_str), strict=False)
+        return str(net.broadcast_address)
+    except Exception:
+        return None
 
 
 def build_deck():
@@ -92,7 +144,6 @@ def play_one_round(conn: socket.socket) -> bool:
     dealer.append(deck.pop())  # hidden
 
     p_sum = hand_sum(player)
-    print(f"[SERVER] Initial: player_sum={p_sum}, dealer_up={dealer[0]}, dealer_hidden=(hidden)")
 
     # Send player's 2 cards + dealer upcard
     try:
@@ -111,26 +162,21 @@ def play_one_round(conn: socket.socket) -> bool:
     while True:
         raw = recv_exact(conn, c2s_size)
         if raw is None:
-            print("[SERVER] Player decision timeout / disconnect.")
             return False
 
         decision = unpack_payload_decision(raw)
         if decision not in (DECISION_HIT, DECISION_STAND):
-            print("[SERVER] Invalid decision received, ignoring.")
             continue
 
         if decision == DECISION_HIT:
             card = deck.pop()
             player.append(card)
             p_sum = hand_sum(player)
-            print(f"[SERVER] Player HIT -> card={card}, player_sum={p_sum}")
 
             r, s = card
             try:
                 if p_sum > 21:
-                    # Bust: attach final result on this last card
                     conn.sendall(pack_payload_card(RESULT_LOSS, r, s))
-                    print("[SERVER] Player BUST -> dealer wins")
                     return True
                 else:
                     conn.sendall(pack_payload_card(RESULT_NOT_OVER, r, s))
@@ -139,24 +185,19 @@ def play_one_round(conn: socket.socket) -> bool:
             continue
 
         # STAND
-        print(f"[SERVER] Player STAND at sum={p_sum}")
         break
 
     # Dealer turn: reveal hidden
     hidden = dealer[1]
     dealer_sum = hand_sum(dealer)
-    print(f"[SERVER] Dealer reveals hidden card={hidden}, dealer_sum={dealer_sum}")
 
     hr, hs = hidden
     try:
         if dealer_sum >= 17:
-            # Dealer stands immediately after reveal -> reveal + final result
             result = decide_result(p_sum, dealer_sum)
             conn.sendall(pack_payload_card(result, hr, hs))
-            print(f"[SERVER] Dealer stands -> result={result}")
             return True
         else:
-            # Reveal only, round continues
             conn.sendall(pack_payload_card(RESULT_NOT_OVER, hr, hs))
     except OSError:
         return False
@@ -166,19 +207,16 @@ def play_one_round(conn: socket.socket) -> bool:
         card = deck.pop()
         dealer.append(card)
         dealer_sum = hand_sum(dealer)
-        print(f"[SERVER] Dealer HIT -> card={card}, dealer_sum={dealer_sum}")
 
         r, s = card
         try:
             if dealer_sum > 21:
                 conn.sendall(pack_payload_card(RESULT_WIN, r, s))
-                print("[SERVER] Dealer BUST -> client wins")
                 return True
 
             if dealer_sum >= 17:
                 result = decide_result(p_sum, dealer_sum)
                 conn.sendall(pack_payload_card(result, r, s))
-                print(f"[SERVER] Dealer stands -> result={result}")
                 return True
 
             conn.sendall(pack_payload_card(RESULT_NOT_OVER, r, s))
@@ -201,7 +239,7 @@ def parse_request_binary_or_text(conn: socket.socket) -> tuple[int, str] | None:
     if req is not None:
         return req.rounds, req.client_name
 
-    # Text fallback (some teams may send "N\n")
+    # Text fallback
     try:
         text = first.decode("utf-8", errors="ignore")
         while "\n" not in text and len(text) < 128:
@@ -222,22 +260,15 @@ def parse_request_binary_or_text(conn: socket.socket) -> tuple[int, str] | None:
 
 def handle_client(conn: socket.socket, addr):
     try:
-        print(f"[SERVER] TCP connection from {addr[0]}:{addr[1]}")
-
         parsed = parse_request_binary_or_text(conn)
         if parsed is None:
-            print("[SERVER] Bad/timeout REQUEST (neither binary nor valid text). Closing.")
             return
 
         rounds, client_name = parsed
-        kind = "binary" if client_name != "UnknownTextClient" else "text"
-        print(f"[SERVER] Received REQUEST ({kind}): rounds={rounds}, client={client_name}")
 
-        for i in range(1, rounds + 1):
-            print(f"\n[SERVER] --- Round {i}/{rounds} (client={client_name}) ---")
+        for _ in range(rounds):
             ok = play_one_round(conn)
             if not ok:
-                print("[SERVER] Stopping this client session (disconnect/timeout).")
                 return
 
     except Exception:
@@ -248,14 +279,12 @@ def handle_client(conn: socket.socket, addr):
             conn.close()
         except Exception:
             pass
-        print(f"[SERVER] Closed connection {addr[0]}:{addr[1]}")
 
 
-def offer_broadcaster(stop_event: threading.Event, udp_sock: socket.socket, offer_bytes: bytes):
-    targets = [
-        ("<broadcast>", UDP_OFFER_PORT),     # limited broadcast (255.255.255.255)
-        ("10.100.102.255", UDP_OFFER_PORT),  # directed broadcast של הסאבנט שלכם
-    ]
+def offer_broadcaster(stop_event: threading.Event, udp_sock: socket.socket, offer_bytes: bytes, directed_bcast: str | None):
+    targets = [("<broadcast>", UDP_OFFER_PORT)]
+    if directed_bcast:
+        targets.append((directed_bcast, UDP_OFFER_PORT))
 
     while not stop_event.is_set():
         for target in targets:
@@ -266,7 +295,6 @@ def offer_broadcaster(stop_event: threading.Event, udp_sock: socket.socket, offe
         time.sleep(1)
 
 
-
 def main():
     # TCP listener
     tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -275,18 +303,35 @@ def main():
     tcp_sock.listen()
     tcp_port = tcp_sock.getsockname()[1]
 
-    ip = get_local_ip()
-    print(f"Server started, listening on IP address {ip}, TCP port {tcp_port}")
+    # Choose correct interface (avoid VirtualBox)
+    bind_ip = get_default_route_ip()
 
-    # UDP broadcaster socket
+    # Compute directed broadcast for current Wi-Fi/subnet (best-effort)
+    wifi_info = get_wifi_ipv4_and_mask_from_ipconfig()
+    directed_bcast = None
+    if wifi_info:
+        wifi_ip, wifi_mask = wifi_info
+        directed_bcast = compute_directed_broadcast(wifi_ip, wifi_mask)
+        # Prefer Wi-Fi IP if it exists (more accurate than default-route sometimes)
+        bind_ip = wifi_ip
+
+    print(f"Server started, listening on IP address {bind_ip}, TCP port {tcp_port}")
+    if directed_bcast:
+        print(f"Broadcast targets: <broadcast> and {directed_bcast}")
+    else:
+        print("Broadcast targets: <broadcast> (no directed broadcast found)")
+
+    # UDP broadcaster socket (bind to chosen interface!)
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    udp_sock.bind((bind_ip, 0))
+
     offer_bytes = pack_offer(tcp_port, TEAM_NAME)
 
     stop_event = threading.Event()
     threading.Thread(
         target=offer_broadcaster,
-        args=(stop_event, udp_sock, offer_bytes),
+        args=(stop_event, udp_sock, offer_bytes, directed_bcast),
         daemon=True
     ).start()
 
