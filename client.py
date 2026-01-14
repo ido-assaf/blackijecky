@@ -11,7 +11,7 @@ from protocol import (
     PAYLOAD_S2C_STRUCT,
 )
 
-CLIENT_TEAM_NAME = "Blackijecky"
+CLIENT_TEAM_NAME = "Blackijecky_Tamar"
 
 
 def recv_exact(sock: socket.socket, n: int) -> bytes | None:
@@ -268,3 +268,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
