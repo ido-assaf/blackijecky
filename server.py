@@ -15,7 +15,7 @@ from protocol import (
     PAYLOAD_C2S_STRUCT,  # 10 bytes
 )
 
-TEAM_NAME = "Blackijecky"
+TEAM_NAME = "Blackijecky - server"
 
 # Suit encoding: 0=Heart, 1=Diamond, 2=Club, 3=Spade
 SUITS = [0, 1, 2, 3]
@@ -163,8 +163,6 @@ def play_one_round(conn: socket.socket) -> bool:
 
     # Dealer draws until >=17 or bust
     while True:
-        dealer_sum = hand_sum(dealer)
-
         card = deck.pop()
         dealer.append(card)
         dealer_sum = hand_sum(dealer)

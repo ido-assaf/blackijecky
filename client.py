@@ -11,7 +11,7 @@ from protocol import (
     PAYLOAD_S2C_STRUCT,
 )
 
-CLIENT_TEAM_NAME = "Blackijecky"
+CLIENT_TEAM_NAME = "Blackijecky - client"
 
 
 def recv_exact(sock: socket.socket, n: int) -> bytes | None:
@@ -78,6 +78,7 @@ def wait_for_offer(udp: socket.socket) -> tuple[str, int, str]:
     """
     Blocks until a valid offer is received.
     Returns (server_ip, tcp_port, server_name).
+
     NOTE: For hackathon compatibility (different computers), we do NOT filter by team name.
     """
     print(f"Client started, listening for offer requests on UDP {UDP_OFFER_PORT}...")
