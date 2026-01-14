@@ -252,12 +252,19 @@ def handle_client(conn: socket.socket, addr):
 
 
 def offer_broadcaster(stop_event: threading.Event, udp_sock: socket.socket, offer_bytes: bytes):
+    targets = [
+        ("<broadcast>", UDP_OFFER_PORT),     # limited broadcast (255.255.255.255)
+        ("10.100.102.255", UDP_OFFER_PORT),  # directed broadcast של הסאבנט שלכם
+    ]
+
     while not stop_event.is_set():
-        try:
-            udp_sock.sendto(offer_bytes, ("<broadcast>", UDP_OFFER_PORT))
-        except OSError:
-            pass
+        for target in targets:
+            try:
+                udp_sock.sendto(offer_bytes, target)
+            except OSError:
+                pass
         time.sleep(1)
+
 
 
 def main():
