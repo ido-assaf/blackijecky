@@ -79,8 +79,11 @@ def wait_for_offer(udp: socket.socket) -> tuple[str, int, str]:
     Blocks until a valid offer is received.
     Returns (server_ip, tcp_port, server_name).
 
-    NOTE: For hackathon compatibility (different computers), we do NOT filter by team name.
+    We filter offers by expected server name to avoid connecting to other teams
+    on shared networks (e.g., BGU Wi-Fi).
     """
+    EXPECTED_SERVER_NAME = "Blackijecky - server"  # חייב להתאים למה שהשרת משדר
+
     print(f"Client started, listening for offer requests on UDP {UDP_OFFER_PORT}...")
 
     while True:
@@ -92,8 +95,19 @@ def wait_for_offer(udp: socket.socket) -> tuple[str, int, str]:
         server_ip = addr[0]
         server_name = offer.server_name
 
-        print(f"Received offer from {server_ip} (server_name={server_name}, tcp_port={offer.tcp_port})")
-        return server_ip, offer.tcp_port, server_name
+        # normalize (in case of null padding)
+        if isinstance(server_name, bytes):
+            server_name_norm = server_name.decode("utf-8", errors="ignore").rstrip("\x00").strip()
+        else:
+            server_name_norm = str(server_name).rstrip("\x00").strip()
+
+        # Filter out other servers on the network (e.g., "dealer")
+        if server_name_norm != EXPECTED_SERVER_NAME:
+            continue
+
+        print(f"Received offer from {server_ip} (server_name={server_name_norm}, tcp_port={offer.tcp_port})")
+        return server_ip, offer.tcp_port, server_name_norm
+
 
 
 def play_session(server_ip: str, tcp_port: int, rounds: int) -> tuple[int, int, int] | None:
